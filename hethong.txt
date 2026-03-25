@@ -1,0 +1,43 @@
+## 1. Môi trường & Công cụ (Environment & Setup)
+*   **Framework:** PyTorch.
+*   **Môi trường:** Python.
+*   **Phần cứng khuyến nghị:** Sử dụng GPU.
+
+## 2. Tiền xử lý & Tăng cường dữ liệu (Data Preprocessing & Augmentation)
+Trong class `Dataset` hoặc `DataLoader`, hình ảnh cần phải trải qua các bước xử lý sau trước khi đưa vào hàm train:
+*   **Kích thước đầu vào (Input Size):** Cắt (crop) và thay đổi kích thước (resize) về chuẩn `224 x 224`.
+*   **Tăng cường dữ liệu (Augmentation):** Áp dụng các phép xoay (rotation) và biến đổi phối cảnh (perspective transformation) để mô phỏng sự đa dạng của hình ảnh người dùng chụp.
+*   **Batch Size:** 48 hình ảnh mỗi mini-batch (có thể tinh chỉnh tùy bộ nhớ GPU).
+
+## 3. Kiến trúc Mô hình (Model Architecture)
+Hàm khởi tạo mô hình cần bao gồm các thành phần:
+*   **Base Network:** Sử dụng các mạng ResNet (như ResNet50, ResNet152) hoặc DenseNet đã được pretrained trên ImageNet.
+*   **Lớp trích xuất đặc trưng (Feature Extraction):** 
+    *   Nên sử dụng Gộp song tuyến tính nhỏ gọn (Compact Bilinear Pooling - CBP) tại lớp pooling cuối cùng. 
+    *   Thêm một lớp tích chập `1x1` (1x1 convolutional layer) trước lớp pooling để giảm số chiều xuống còn 256. CBP sẽ chiếu ra vector kích thước 8192.
+*   **Regularization:** Thêm một lớp Dropout với xác suất `p = 0.5` trước lớp phân loại (classification layer) cuối cùng.
+
+## 4. Hàm mất mát & Khai thác mẫu khó (Loss Functions & Hard-example mining)
+Với chiến lược Multi-head Metric Learning, hàm loss tổng (Total Loss) cho mỗi mini-batch là sự kết hợp của 4 hàm loss đa tác vụ:
+
+`L_final = (λ_SCE * L_SCE) + (λ_η * L_η) + (λ_ρ * L_ρ) + (λ_Γ * L_Γ)`
+
+**Chi tiết các hàm Loss & Trọng số dự kiến (dựa trên ResNet50 validation):**
+1.  **L_SCE (Softmax Cross-Entropy):** `λ_SCE = 1.0`.
+2.  **L_η (Cosine-Softmax / ArcFace):** `λ_η = 0.0` hoặc `0.1`.
+3.  **L_ρ (Triplet Loss):** `λ_ρ = 1.0` [2, 8]. Cần kết hợp thuật toán **Online hard-example mining** để tìm các bộ ba (triplets) khó trong mini-batch.
+4.  **L_Γ (Contrastive Loss):** `λ_Γ = 1.0` [2, 8]. Cần dùng **Online hard-example mining** để chọn các cặp (pairs) khó nhằm tính loss.
+
+## 5. Cấu hình Optimizer & Learning Rate (Training Strategy)
+Trong hàm `train`, quy trình tối ưu hóa cần được thiết lập như sau:
+*   **Optimizer:** Adam.
+*   **Learning Rate (LR) khởi điểm:** `1e-4` (0.0001).
+*   **LR Scheduler:** Giảm learning rate đi một nửa (halve) mỗi khi điểm đánh giá `Validation GAP` có dấu hiệu chững lại (plateau). (Trong PyTorch, có thể dùng `ReduceLROnPlateau`).
+*   **Số lượng Epoch (max_epochs):** Không cố định số epoch. Quá trình train kết hợp với LR Scheduler nên chạy đến khi mô hình hội tụ. Nếu chỉ muốn kiểm tra mã nguồn (quick test), có thể đặt biến cờ `--max_epochs 10`.
+
+## 6. Đánh giá và Lưu Mô hình (Evaluation & Saving)
+Vào cuối mỗi epoch, bạn cần chạy qua tập Validation:
+*   **Tính toán Embedding:** Mô hình lúc này dùng để trích xuất các vector đặc trưng (embeddings) của ảnh query và ảnh reference.
+*   **Đo lường:** Tính toán độ tương đồng cosine (cosine similarities) giữa các vector nhúng này để chấm điểm tin cậy.
+*   **Chỉ số lưu (Metric to monitor):** Dùng chỉ số **GAP (Global Average Precision)** trên tập validation để quyết định việc lưu mô hình. 
+*   **Lưu Checkpoint:** Viết logic kiểm tra: `if current_val_gap > best_val_gap: save_model()`. Cần lưu trọng số của Base Network, các lớp CBP/Bilinear và trọng số của các metric learning heads để tiếp tục training hoặc suy luận (inference) sau này.
